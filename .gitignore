@@ -5,3 +5,7 @@ cache/
 __pycache__/
 *.pyc
 .env
+
+contracts/typechain-types/
+frontend/.vercel/
+frontend/.next/

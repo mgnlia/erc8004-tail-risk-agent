@@ -55,6 +55,29 @@ export interface DemoScenario {
   trust_score_impact: string;
 }
 
+export interface QuoteRequest {
+  requester: string;
+  coverage_asset: string;
+  coverage_amount_eth: number;
+  duration_days: number;
+  trigger_threshold: number;
+}
+
+export interface PolicyQuote {
+  approved: boolean;
+  premium_eth: number;
+  premium_rate: number;
+  risk_score: number;
+  rejection_reason?: string;
+  quote_id?: string;
+}
+
+export interface IssuePolicyResponse {
+  policy_id: string;
+  status: "issued" | "pending";
+  tx_hash?: string;
+}
+
 // ── Mock data for demo/offline mode ──────────────────────────────────────────
 
 const MOCK_VOLATILITY: VolatilityReading = {
@@ -114,6 +137,67 @@ async function fetchWithFallback<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+async function postWithFallback<T>(path: string, payload: unknown, fallback: T): Promise<T> {
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(6000),
+    });
+
+    if (!res.ok) return fallback;
+    return res.json();
+  } catch {
+    return fallback;
+  }
+}
+
+function round(num: number, decimals = 4): number {
+  const p = Math.pow(10, decimals);
+  return Math.round(num * p) / p;
+}
+
+function toPercent(value: number): string {
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+function buildMockQuote(request: QuoteRequest): PolicyQuote {
+  const baseRate = 0.015;
+  const durationFactor = Math.max(0.5, request.duration_days / 30);
+  const triggerFactor = Math.max(0.8, 1.3 - request.trigger_threshold);
+  const sizeFactor = Math.max(1, request.coverage_amount_eth / 5);
+
+  const premiumRate = round(baseRate * durationFactor * triggerFactor * sizeFactor, 6);
+  const premiumEth = round(request.coverage_amount_eth * premiumRate, 4);
+
+  const riskScore = Math.min(
+    99,
+    Math.max(
+      5,
+      round(25 + (1 - request.trigger_threshold) * 60 + Math.min(request.duration_days, 90) * 0.15, 1)
+    )
+  );
+
+  if (riskScore > 90) {
+    return {
+      approved: false,
+      premium_eth: 0,
+      premium_rate: premiumRate,
+      risk_score: riskScore,
+      rejection_reason: `Risk too high (${riskScore}/100) for automatic underwriting`,
+    };
+  }
+
+  return {
+    approved: true,
+    premium_eth: premiumEth,
+    premium_rate: premiumRate,
+    risk_score: riskScore,
+    quote_id: `q_${Date.now()}`,
+  };
+}
+
 // ── API functions ─────────────────────────────────────────────────────────────
 
 export async function getVolatility(): Promise<VolatilityReading> {
@@ -154,6 +238,24 @@ export async function getDemoScenario(): Promise<DemoScenario> {
   });
 }
 
+// Compatibility wrapper expected by UI components
+export const api = {
+  requestQuote: async (request: QuoteRequest): Promise<PolicyQuote> => {
+    const fallback = buildMockQuote(request);
+    return postWithFallback("/quote", request, fallback);
+  },
+
+  issuePolicy: async (request: QuoteRequest): Promise<IssuePolicyResponse> => {
+    const fallback: IssuePolicyResponse = {
+      policy_id: `pol_${Date.now()}`,
+      status: "issued",
+      tx_hash: `0xmock${Math.random().toString(16).slice(2).padEnd(64, "0").slice(0, 64)}`,
+    };
+
+    return postWithFallback("/policy/issue", request, fallback);
+  },
+};
+
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
 export function formatUSDC(raw: number): string {
@@ -182,4 +284,8 @@ export function regimeColor(regime: string): string {
     black_swan: "text-red-400",
   };
   return colors[regime] || "text-slate-400";
+}
+
+export function formatPremiumRate(rate: number): string {
+  return toPercent(rate);
 }
